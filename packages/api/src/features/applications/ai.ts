@@ -1,11 +1,14 @@
 import { ORPCError } from "@orpc/client";
-import { generateText } from "ai";
+import { APICallError, generateText, RetryError } from "ai";
 import z from "zod";
+import { coverLetterTextToHtml } from "@reactive-resume/resume/cover-letter";
 import { generateId, slugify } from "@reactive-resume/utils/string";
 import { protectedProcedure } from "../../context";
 import { aiRequestRateLimit } from "../../middleware/rate-limit";
+import { generateJson as sharedGenerateJson } from "../ai/generate-json";
 import { getModel } from "../ai/service";
 import { aiProvidersService } from "../ai-providers/service";
+import { coverLetterService } from "../cover-letters/service";
 import { resumeService } from "../resume/service";
 import { applicationService } from "./service";
 
@@ -28,24 +31,54 @@ async function resolveModel(userId: string) {
 	});
 }
 
-// generateText + tolerant JSON extraction + Zod validation. Mirrors the resume-analysis pattern
-// (the SDK's generateObject isn't wired for every provider here, so we parse defensively).
-async function generateJson<T>(model: Awaited<ReturnType<typeof resolveModel>>, prompt: string, schema: z.ZodType<T>) {
-	const { text } = await generateText({ model, messages: [{ role: "user", content: prompt }] });
-	const fenced = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-	const candidate = fenced?.[1] ?? text;
-	const start = candidate.indexOf("{");
-	const end = candidate.lastIndexOf("}");
-	if (start === -1 || end === -1 || end < start) {
-		throw new ORPCError("INTERNAL_SERVER_ERROR", { message: "The AI response could not be parsed." });
-	}
-	return schema.parse(JSON.parse(candidate.slice(start, end + 1)));
+// --- AI provider failure translation ------------------------------------------
+// The AI SDK surfaces provider-side failures as `APICallError` (HTTP 4xx/5xx from
+// the provider) or `RetryError` with `reason: "maxRetriesExceeded"`.  Translating
+// only those to BAD_GATEWAY gives the client an actionable status code instead of
+// an opaque 500.  Validation, credential, model-resolution, and response-parsing
+// errors rethrow unchanged.
+
+function isAiProviderGatewayError(error: unknown): boolean {
+	if (APICallError.isInstance(error)) return true;
+	if (RetryError.isInstance(error) && error.reason === "maxRetriesExceeded") return true;
+	return false;
 }
 
-async function generatePlainText(model: Awaited<ReturnType<typeof resolveModel>>, prompt: string) {
-	const { text } = await generateText({ model, messages: [{ role: "user", content: prompt }] });
-	return text.trim();
+/** Throws a BAD_GATEWAY ORPCError, preserving the original cause for upstream error reporters. */
+function throwAiProviderGatewayError(cause?: unknown): never {
+	throw new ORPCError("BAD_GATEWAY", { message: "Could not reach the AI provider.", cause });
 }
+
+/**
+ * Wrapper around the shared `generateJson` that translates AI provider failures
+ * to BAD_GATEWAY.  Accepts the same prompt shape as the shared module.
+ * Exported for tests.
+ */
+export async function generateJson<T>(
+	model: Awaited<ReturnType<typeof resolveModel>>,
+	prompt: { system?: string; prompt: string },
+	schema: z.ZodType<T>,
+) {
+	try {
+		return await sharedGenerateJson(model, prompt, schema);
+	} catch (error) {
+		if (isAiProviderGatewayError(error)) throwAiProviderGatewayError(error);
+		throw error;
+	}
+}
+
+/** Exported for tests: provider-failure translation shared by every copilot procedure. */
+export async function generatePlainText(model: Awaited<ReturnType<typeof resolveModel>>, prompt: string) {
+	try {
+		const { text } = await generateText({ model, messages: [{ role: "user", content: prompt }] });
+		return text.trim();
+	} catch (error) {
+		if (isAiProviderGatewayError(error)) throwAiProviderGatewayError(error);
+		throw error;
+	}
+}
+
+// --- Schema & router -----------------------------------------------------------
 
 const autofillOutput = z.object({
 	company: z.string(),
@@ -74,6 +107,11 @@ const matchScoreOutput = z.object({
 		.transform((a) => a.slice(0, 8)),
 });
 
+const aiErrors = {
+	BAD_GATEWAY: { message: "The AI provider returned an error or is unreachable.", status: 502 },
+	BAD_REQUEST: { message: "Invalid application or AI request.", status: 400 },
+};
+
 export const aiRouter = {
 	// Extract structured fields from a pasted job description. The posting text itself is stored
 	// verbatim on the application, so nothing here fetches or scrapes a URL.
@@ -82,12 +120,15 @@ export const aiRouter = {
 		.input(autofillInputSchema)
 		.use(aiRequestRateLimit)
 		.output(autofillOutput)
+		.errors(aiErrors)
 		.handler(async ({ context, input }) => {
 			const model = await resolveModel(context.user.id);
 
 			return generateJson(
 				model,
-				`Extract the following fields from this job posting. Return ONLY JSON with keys company, role, location, salary. Use an empty string for anything not stated.\n\nJOB POSTING:\n${input.jobDescription}`,
+				{
+					prompt: `Extract the following fields from this job posting. Return ONLY JSON with keys company, role, location, salary. Use an empty string for anything not stated.\n\nJOB POSTING:\n${input.jobDescription}`,
+				},
 				autofillOutput,
 			);
 		}),
@@ -103,6 +144,7 @@ export const aiRouter = {
 		.input(z.object({ id: z.string() }))
 		.use(aiRequestRateLimit)
 		.output(matchScoreOutput)
+		.errors(aiErrors)
 		.handler(async ({ context, input }) => {
 			const application = await applicationService.getById({ id: input.id, userId: context.user.id });
 			if (!application.resumeId)
@@ -118,7 +160,9 @@ export const aiRouter = {
 
 			const result = await generateJson(
 				model,
-				`Compare this resume against the job description. Return ONLY JSON with keys score (integer 0-100 fit), gaps (array of short missing-qualification strings), strengths (array of short matching-strength strings).\n\nRESUME:\n${JSON.stringify(resume.data)}\n\nJOB DESCRIPTION:\n${application.jobDescription}`,
+				{
+					prompt: `Compare this resume against the job description. Return ONLY JSON with keys score (integer 0-100 fit), gaps (array of short missing-qualification strings), strengths (array of short matching-strength strings).\n\nRESUME:\n${JSON.stringify(resume.data)}\n\nJOB DESCRIPTION:\n${application.jobDescription}`,
+				},
 				matchScoreOutput,
 			);
 
@@ -142,7 +186,8 @@ export const aiRouter = {
 		})
 		.input(z.object({ id: z.string(), kind: z.enum(["cover-letter", "follow-up"]) }))
 		.use(aiRequestRateLimit)
-		.output(z.object({ text: z.string() }))
+		.output(z.object({ text: z.string(), coverLetterId: z.string().optional() }))
+		.errors(aiErrors)
 		.handler(async ({ context, input }) => {
 			const application = await applicationService.getById({ id: input.id, userId: context.user.id });
 			const model = await resolveModel(context.user.id);
@@ -157,7 +202,16 @@ export const aiRouter = {
 					? `Write a concise, specific cover letter (250-350 words, no placeholders like [Name]) for this application, drawing on the resume. Return only the letter text.\n\n${context_}`
 					: `Write a short, polite follow-up message (80-120 words) to a recruiter checking in on this application. Warm but not pushy. Return only the message text.\n\n${context_}`;
 
-			return { text: await generatePlainText(model, prompt) };
+			const text = await generatePlainText(model, prompt);
+			if (input.kind === "follow-up") return { text };
+			const letter = await coverLetterService.create({
+				userId: context.user.id,
+				name: `${application.company} — ${application.role}`.slice(0, 100),
+				content: coverLetterTextToHtml(text),
+				applicationId: input.id,
+				...(resume ? { resumeId: resume.id } : {}),
+			});
+			return { text, coverLetterId: letter.id };
 		}),
 
 	// Create a tailored copy of the linked resume (job-specific summary) and link it to the application.
@@ -171,6 +225,7 @@ export const aiRouter = {
 		.input(z.object({ id: z.string() }))
 		.use(aiRequestRateLimit)
 		.output(z.object({ resumeId: z.string(), name: z.string() }))
+		.errors(aiErrors)
 		.handler(async ({ context, input }) => {
 			const application = await applicationService.getById({ id: input.id, userId: context.user.id });
 			if (!application.resumeId)
@@ -186,7 +241,9 @@ export const aiRouter = {
 
 			const { summary } = await generateJson(
 				model,
-				`Rewrite this candidate's professional summary to target the job below. Return ONLY JSON { "summary": "<one to two sentence HTML paragraph, e.g. <p>…</p>>" }. Keep it truthful to the resume.\n\nRESUME:\n${JSON.stringify(resume.data)}\n\nJOB:\n${application.role} at ${application.company}\n${application.jobDescription}`,
+				{
+					prompt: `Rewrite this candidate's professional summary to target the job below. Return ONLY JSON { "summary": "<one to two sentence HTML paragraph, e.g. <p>…</p>>" }. Keep it truthful to the resume.\n\nRESUME:\n${JSON.stringify(resume.data)}\n\nJOB:\n${application.role} at ${application.company}\n${application.jobDescription}`,
+				},
 				z.object({ summary: z.string() }),
 			);
 

@@ -147,16 +147,6 @@ export const TOOL_META = {
 		inputSchema: z.object({ id: resumeIdSchema }),
 		annotations: READ_IDEMPOTENT,
 	},
-	[T.getResumeAnalysis]: {
-		title: "Get Resume Analysis",
-		description: [
-			"Returns the latest saved AI analysis for a resume (scorecard, strengths, suggestions), if any.",
-			"Analyses are created from the Reactive Resume web app AI flow, not from MCP.",
-			`Returns JSON or a short message if none exists. Use \`${T.listResumes}\` to find resume IDs.`,
-		].join("\n"),
-		inputSchema: z.object({ id: resumeIdSchema }),
-		annotations: READ_IDEMPOTENT,
-	},
 	[T.downloadResumePdf]: {
 		title: "Download Resume PDF",
 		description: [
@@ -207,7 +197,7 @@ export const TOOL_META = {
 			"Create a new resume from a full ResumeData JSON object (e.g. an exported file from Reactive Resume).",
 			"A random name and slug are assigned automatically, like the web importer.",
 			`For small edits to an existing resume, prefer \`${T.patchResume}\` instead of re-importing.`,
-			"Large payloads may exceed MCP client message limits — in that case, use the web UI or the HTTP API.",
+			"Large payloads may exceed MCP client message limits; in that case, use the web UI or the HTTP API.",
 		].join("\n"),
 		inputSchema: z.object({
 			data: z
@@ -242,6 +232,7 @@ export const TOOL_META = {
 			"current structure, and `resume://_meta/schema` to understand valid paths and types.",
 			"",
 			"Supported operations: add, remove, replace, move, copy, test.",
+			"Can remove or overwrite existing content; edits to a public resume change its published content.",
 			"",
 			"Common path examples:",
 			"  /basics/name                          — Change the name",
@@ -256,19 +247,19 @@ export const TOOL_META = {
 			"",
 			"Important: HTML content fields (description, summary.content) must use valid HTML.",
 			"New items must include a valid UUID as `id` and `hidden: false`.",
-			`Locked resumes cannot be patched — use \`${T.unlockResume}\` first.`,
+			`Locked resumes cannot be patched; use \`${T.unlockResume}\` first.`,
 		].join("\n"),
 		inputSchema: z.object({
 			id: resumeIdSchema,
 			operations: resumePatchOperationsSchema,
 		}),
-		annotations: WRITE_NON_IDEMPOTENT,
+		annotations: { ...WRITE_NON_IDEMPOTENT, destructiveHint: true, openWorldHint: true },
 	},
 	[T.updateResume]: {
 		title: "Update Resume (metadata)",
 		description: [
 			"Update resume metadata only: display name, URL slug, tags, and/or public visibility.",
-			"Does not change section content — use JSON Patch via the patch tool for body edits.",
+			"Does not change section content; use JSON Patch via the patch tool for body edits.",
 			`Locked resumes cannot be updated; use \`${T.unlockResume}\` first.`,
 			"Password protection cannot be set or removed via MCP; use the web app for that.",
 			"",
@@ -286,25 +277,25 @@ export const TOOL_META = {
 					"When true, anyone with the link can view the public resume (subject to password if set in the app).",
 				),
 		}),
-		annotations: WRITE_NON_IDEMPOTENT,
+		annotations: { ...WRITE_NON_IDEMPOTENT, destructiveHint: true, openWorldHint: true },
 	},
 	[T.deleteResume]: {
 		title: "Delete Resume",
 		description: [
-			"Permanently delete a resume and all its associated files (screenshots, PDFs).",
+			"Permanently delete a resume and all its associated files (screenshots, PDFs), removing public access if published.",
 			"",
-			`This action is IRREVERSIBLE. Locked resumes cannot be deleted — use \`${T.unlockResume}\` first.`,
+			`This action is IRREVERSIBLE. Locked resumes cannot be deleted; use \`${T.unlockResume}\` first.`,
 			`Consider using \`${T.duplicateResume}\` to create a backup before deleting.`,
 		].join("\n"),
 		inputSchema: z.object({ id: resumeIdSchema }),
-		annotations: WRITE_DESTRUCTIVE,
+		annotations: { ...WRITE_DESTRUCTIVE, openWorldHint: true },
 	},
 	[T.lockResume]: {
 		title: "Lock Resume",
 		description: [
 			"Lock a resume to prevent any modifications.",
 			"",
-			`When locked, a resume cannot be edited (${T.patchResume}, ${T.updateResume}), or deleted.`,
+			`When locked, a resume cannot be edited (${T.patchResume}, ${T.updateResume}) or deleted.`,
 			"Useful for protecting finalized resumes from accidental changes.",
 			`Use \`${T.unlockResume}\` to re-enable editing.`,
 		].join("\n"),
@@ -331,7 +322,7 @@ export const TOOL_META = {
 	[T.listApplications]: {
 		title: "List Applications",
 		description:
-			"List job applications for the authenticated account. Use this before reading or updating existing applications.",
+			"List job applications for the authenticated account, including contacts, notes, document URLs, and timeline. Use this before reading or updating existing applications.",
 		inputSchema: z.object({
 			status: applicationStatusSchema.optional(),
 			tags: z.array(z.string()).optional().default([]),
@@ -353,7 +344,7 @@ export const TOOL_META = {
 	},
 	[T.getApplicationStats]: {
 		title: "Get Application Stats",
-		description: "Return aggregate application counts by pipeline stage and source for insights.",
+		description: "Return aggregate application counts by pipeline stage and source.",
 		inputSchema: z.object({}),
 		annotations: READ_IDEMPOTENT,
 	},
@@ -366,13 +357,13 @@ export const TOOL_META = {
 	[T.updateApplication]: {
 		title: "Update Application",
 		description:
-			"Update application fields, move stages, archive/unarchive, edit contacts, follow-up, tags, or linked resume.",
+			"Update application fields, move stages, archive/unarchive, edit contacts, follow-up, tags, or linked resume. Provided fields replace existing values, including contact and tag lists.",
 		inputSchema: z.object({
 			id: applicationIdSchema,
 			...applicationMutableFieldsSchema,
 			archived: z.boolean().optional().describe("Whether the application is hidden from active views."),
 		}),
-		annotations: WRITE_IDEMPOTENT,
+		annotations: WRITE_DESTRUCTIVE,
 	},
 	[T.addApplicationNote]: {
 		title: "Add Application Note",
@@ -395,7 +386,7 @@ export const TOOL_META = {
 				text: z.string().min(1).optional().describe("Replacement note text. Only note entries can change text."),
 			})
 			.refine((value) => value.date !== undefined || value.text !== undefined, "Provide date or text to update."),
-		annotations: WRITE_IDEMPOTENT,
+		annotations: WRITE_DESTRUCTIVE,
 	},
 	[T.deleteApplicationTimelineEntry]: {
 		title: "Delete Application Timeline Entry",
@@ -405,9 +396,10 @@ export const TOOL_META = {
 	},
 	[T.deleteApplication]: {
 		title: "Delete Application",
-		description: "Permanently delete one job application and its owned uploaded documents.",
+		description:
+			"Permanently delete one job application and its owned uploaded documents that no remaining application references, removing those public file URLs.",
 		inputSchema: z.object({ id: applicationIdSchema }),
-		annotations: WRITE_DESTRUCTIVE,
+		annotations: { ...WRITE_DESTRUCTIVE, openWorldHint: true },
 	},
 	[T.bulkUpdateApplications]: {
 		title: "Bulk Update Applications",
@@ -418,13 +410,14 @@ export const TOOL_META = {
 			archived: z.boolean().optional(),
 			addTags: z.array(z.string()).optional(),
 		}),
-		annotations: WRITE_IDEMPOTENT,
+		annotations: WRITE_DESTRUCTIVE,
 	},
 	[T.bulkDeleteApplications]: {
 		title: "Bulk Delete Applications",
-		description: "Permanently delete multiple applications.",
+		description:
+			"Permanently delete multiple applications and their owned uploaded documents that no remaining application references, removing those public file URLs.",
 		inputSchema: z.object({ ids: z.array(z.string()).min(1) }),
-		annotations: WRITE_DESTRUCTIVE,
+		annotations: { ...WRITE_DESTRUCTIVE, openWorldHint: true },
 	},
 	[T.importApplications]: {
 		title: "Import Applications",
@@ -434,7 +427,8 @@ export const TOOL_META = {
 	},
 	[T.attachApplicationDocument]: {
 		title: "Attach Application Document",
-		description: "Attach a sent resume or cover-letter PDF to an application using base64-encoded PDF bytes.",
+		description:
+			"Upload and attach a resume or cover-letter PDF using base64-encoded PDF bytes (maximum 10MB). Anyone with the resulting file URL can download it without signing in. Replaces the existing attachment of that kind and deletes its owned file if no other application references it. Does not send the document to an employer.",
 		inputSchema: z.object({
 			id: applicationIdSchema,
 			kind: applicationDocumentKindSchema,
@@ -442,36 +436,41 @@ export const TOOL_META = {
 			contentType: z.literal("application/pdf"),
 			dataBase64: pdfBase64Schema,
 		}),
-		annotations: WRITE_NON_IDEMPOTENT,
+		annotations: { ...WRITE_NON_IDEMPOTENT, destructiveHint: true, openWorldHint: true },
 	},
 	[T.removeApplicationDocument]: {
 		title: "Remove Application Document",
-		description: "Remove a sent resume or cover-letter PDF from an application.",
+		description:
+			"Clear a resume or cover-letter attachment and delete its owned uploaded file if no other application references it, removing access through its public file URL.",
 		inputSchema: z.object({ id: applicationIdSchema, kind: applicationDocumentKindSchema }),
-		annotations: WRITE_IDEMPOTENT,
+		annotations: { ...WRITE_DESTRUCTIVE, openWorldHint: true },
 	},
 	[T.autofillApplicationFromJob]: {
 		title: "Autofill Application From Job",
-		description: "Use AI to extract company, role, location, and salary from a pasted job posting.",
+		description:
+			"Send a pasted job posting to your configured AI provider to extract company, role, location, and salary. Requires an enabled, tested default AI provider. Returns suggestions without saving an application or fetching a job URL.",
 		inputSchema: z.object({ jobDescription: z.string().trim().min(1).max(20_000) }),
-		annotations: READ_NON_IDEMPOTENT,
+		annotations: { ...READ_NON_IDEMPOTENT, openWorldHint: true },
 	},
 	[T.scoreApplicationMatch]: {
 		title: "Score Application Match",
-		description: "Score the linked resume against the application's job description and persist match metadata.",
+		description:
+			"Send the full linked resume and job description to your configured AI provider to score their match. Requires an enabled, tested default AI provider, a linked resume, and a job description. Overwrites the application's saved match score and AI metadata.",
 		inputSchema: z.object({ id: applicationIdSchema }),
-		annotations: WRITE_NON_IDEMPOTENT,
+		annotations: { ...WRITE_NON_IDEMPOTENT, destructiveHint: true, openWorldHint: true },
 	},
 	[T.tailorResumeForApplication]: {
 		title: "Tailor Resume For Application",
-		description: "Create and link a tailored copy of the application's linked resume.",
+		description:
+			"Send the full linked resume and job description to your configured AI provider to rewrite the summary in a new private resume copy. Requires an enabled, tested default AI provider, a linked resume, and a job description. Replaces the application's resume link with the new copy and adds a timeline note; the original resume is unchanged.",
 		inputSchema: z.object({ id: applicationIdSchema }),
-		annotations: WRITE_NON_IDEMPOTENT,
+		annotations: { ...WRITE_NON_IDEMPOTENT, destructiveHint: true, openWorldHint: true },
 	},
 	[T.draftApplicationMessage]: {
 		title: "Draft Application Message",
-		description: "Draft either a cover letter or recruiter follow-up from application and resume context.",
+		description:
+			"Send application context and the full linked resume, when available, to your configured AI provider to draft a cover letter or recruiter follow-up. Requires an enabled, tested default AI provider. Cover-letter mode saves a new cover letter and returns text plus coverLetterId; follow-up mode returns text without saving it. Neither mode sends a message to a recruiter.",
 		inputSchema: z.object({ id: applicationIdSchema, kind: z.enum(["cover-letter", "follow-up"]) }),
-		annotations: READ_NON_IDEMPOTENT,
+		annotations: { ...WRITE_NON_IDEMPOTENT, openWorldHint: true },
 	},
 } as const;

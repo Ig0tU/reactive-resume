@@ -19,6 +19,7 @@ import {
 } from "@reactive-resume/ui/components/dialog";
 import { FormControl, FormItem, FormLabel, FormMessage } from "@reactive-resume/ui/components/form";
 import { Input } from "@reactive-resume/ui/components/input";
+import { OTPField } from "@reactive-resume/ui/components/otp-field";
 import { toast } from "@reactive-resume/ui/components/toast";
 import { useFormBlocker } from "@/hooks/use-form-blocker";
 import { authClient } from "@/libs/auth/client";
@@ -80,13 +81,13 @@ export function EnableTwoFactorDialog(_: DialogProps<"auth.two-factor.enable">) 
 				return;
 			}
 
-			if (data.totpURI && data.backupCodes) {
+			if (data.method === "totp") {
 				setTotpUri(data.totpURI);
 				setBackupCodes(data.backupCodes);
 				setStep("verify");
 				toast.close(toastId);
 			} else {
-				toast.add({ type: "error", description: t`Failed to setup two-factor authentication.`, id: toastId });
+				toast.add({ type: "error", description: t`Could not set up two-factor authentication.`, id: toastId });
 			}
 		},
 	});
@@ -133,7 +134,7 @@ export function EnableTwoFactorDialog(_: DialogProps<"auth.two-factor.enable">) 
 	});
 
 	const onConfirmBackup = () => {
-		toast.add({ type: "success", description: t`Two-factor authentication has been setup successfully.` });
+		toast.add({ type: "success", description: t`Two-factor authentication is now enabled.` });
 		void router.invalidate();
 		closeDialog();
 		onReset();
@@ -287,14 +288,13 @@ export function EnableTwoFactorDialog(_: DialogProps<"auth.two-factor.enable">) 
 										<FormItem hasError={field.state.meta.isTouched && field.state.meta.errors.length > 0}>
 											<FormControl
 												render={
-													<Input
-														type="number"
-														maxLength={6}
-														className="max-w-xs"
+													<OTPField
+														length={6}
+														autoSubmit
 														name={field.name}
 														value={field.state.value}
 														onBlur={field.handleBlur}
-														onChange={(event) => field.handleChange(event.target.value)}
+														onValueChange={field.handleChange}
 													/>
 												}
 											/>
@@ -373,8 +373,8 @@ function TwoFactorDialogDescription({ step }: TwoFactorStepProps) {
 	return match(step)
 		.with("enable", () => (
 			<Trans>
-				Enter your password to confirm setting up two-factor authentication. When enabled, you'll need to enter a code
-				from your authenticator app every time you log in.
+				Enter your password to confirm setting up two-factor authentication. Once it is on, you need a code from your
+				authenticator app every time you sign in.
 			</Trans>
 		))
 		.with("verify", () => (

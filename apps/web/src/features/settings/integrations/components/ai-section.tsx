@@ -39,7 +39,7 @@ type ProviderRowProps = {
 const providerOptions: AIProviderOption[] = [
 	{
 		value: "openai",
-		label: t`OpenAI`,
+		label: "OpenAI",
 		keywords: ["openai", "gpt", "chatgpt"],
 		defaultBaseURL: AI_PROVIDER_DEFAULT_BASE_URLS.openai,
 		defaultModel: "gpt-4.1",
@@ -88,7 +88,7 @@ const providerOptions: AIProviderOption[] = [
 	},
 	{
 		value: "xai",
-		label: t`xAI Grok`,
+		label: "xAI Grok",
 		keywords: ["xai", "grok"],
 		defaultBaseURL: AI_PROVIDER_DEFAULT_BASE_URLS.xai,
 		defaultModel: "grok-4",
@@ -109,7 +109,7 @@ const providerOptions: AIProviderOption[] = [
 	},
 	{
 		value: "togetherai",
-		label: t`Together.ai`,
+		label: "Together.ai",
 		keywords: ["together", "togetherai", "llama"],
 		defaultBaseURL: AI_PROVIDER_DEFAULT_BASE_URLS.togetherai,
 		defaultModel: "meta-llama/Meta-Llama-3.3-70B-Instruct-Turbo",
@@ -463,7 +463,7 @@ function CreateProviderForm() {
 
 			if (tested.testStatus === "success") {
 				setForm(emptyForm);
-				setResult({ ok: true, message: t`Connection verified — provider is ready to use.` });
+				setResult({ ok: true, message: t`Connection verified. The provider is ready to use.` });
 			} else {
 				// ponytail: provider stays persisted on failure so it shows in the list; a re-save creates a new row.
 				setResult({
@@ -559,7 +559,7 @@ function CreateProviderForm() {
 								id="ai-model"
 								value={form.model}
 								onChange={(event) => setForm((current) => ({ ...current, model: event.target.value }))}
-								placeholder={t`gpt-4.1`}
+								placeholder="gpt-4.1"
 								autoCorrect="off"
 								autoCapitalize="off"
 								spellCheck="false"
@@ -575,7 +575,7 @@ function CreateProviderForm() {
 								type="url"
 								value={form.baseURL}
 								onChange={(event) => setForm((current) => ({ ...current, baseURL: event.target.value }))}
-								placeholder={selectedOption?.defaultBaseURL || t`https://gateway.example.com/v1`}
+								placeholder={selectedOption?.defaultBaseURL || "https://gateway.example.com/v1"}
 								autoCorrect="off"
 								autoCapitalize="off"
 								spellCheck="false"

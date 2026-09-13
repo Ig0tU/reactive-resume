@@ -10,6 +10,7 @@ import { buildMarkdown } from "@reactive-resume/resume/markdown";
 import { toast } from "@reactive-resume/ui/components/toast";
 import { downloadWithAnchor, generateFilename } from "@reactive-resume/utils/file";
 import { resolvePublicResumePdfBlob } from "@/features/resume/public/public-pdf";
+import { client } from "@/libs/orpc/client";
 import { createSectionTitleResolverForLocale } from "@/libs/resume/section-title-locale";
 import { createResumePdfBlob } from "./pdf-document";
 
@@ -80,7 +81,7 @@ export function useResumeExport(resume: ExportableResume | undefined, exportOpti
 				const blob = await buildDocx(data, resolveTitle);
 				downloadWithAnchor(blob, generateFilename(getTargetExportName(resume, target), "docx"));
 			} catch {
-				toast.add({ type: "error", description: t`There was a problem while generating the DOCX, please try again.` });
+				toast.add({ type: "error", description: t`Could not generate the DOCX. Please try again.` });
 			}
 		},
 		[resume],
@@ -92,7 +93,7 @@ export function useResumeExport(resume: ExportableResume | undefined, exportOpti
 			if (target === "cover-letter" && !resumeHasCoverLetter(resume.data)) return;
 			const toastId = toast.add({
 				type: "loading",
-				description: t`Please wait while your PDF is being generated...`,
+				description: t`Generating your PDF...`,
 			});
 			setIsExporting(true);
 			try {
@@ -107,8 +108,14 @@ export function useResumeExport(resume: ExportableResume | undefined, exportOpti
 								: undefined,
 						);
 				downloadWithAnchor(blob, generateFilename(getTargetExportName(resume, target), "pdf"));
+				if (exportOptions.publicResumePdf) {
+					// Statistics are best effort and must not delay or fail a completed browser download.
+					void client.resume.statistics
+						.recordDownload(exportOptions.publicResumePdf.publicResume)
+						.catch(() => undefined);
+				}
 			} catch {
-				toast.add({ type: "error", description: t`There was a problem while generating the PDF, please try again.` });
+				toast.add({ type: "error", description: t`Could not generate the PDF. Please try again.` });
 			} finally {
 				setIsExporting(false);
 				toast.close(toastId);
@@ -147,7 +154,7 @@ export function useResumeExport(resume: ExportableResume | undefined, exportOpti
 		} catch {
 			toast.add({
 				type: "error",
-				description: t`There was a problem while preparing your resume for printing, please try again.`,
+				description: t`Could not prepare your resume for printing. Please try again.`,
 			});
 		} finally {
 			setIsExporting(false);

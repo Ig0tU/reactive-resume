@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-	env: { APP_URL: "https://rxresu.me" },
+	env: { APP_URL: "https://rxresu.me", ROOT_RESUME_ID: undefined as string | undefined },
 	serveStatic: vi.fn((_options?: unknown) => vi.fn()),
 	getPublicResumeSocialMeta: vi.fn(),
 }));
@@ -45,6 +45,7 @@ const staticOptions = mocks.serveStatic.mock.calls[0]?.[0] as StaticOptions | un
 describe("web app fallback classification", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		mocks.env.ROOT_RESUME_ID = undefined;
 		vi.mocked(fs.readFile).mockResolvedValue("<html>app</html>");
 		mocks.getPublicResumeSocialMeta.mockResolvedValue(null);
 	});
@@ -66,7 +67,7 @@ describe("web app fallback classification", () => {
 					<title>Reactive Resume — A free and open-source resume builder</title>
 					<meta
 						name="description"
-						content="Reactive Resume is a free and open-source resume builder that simplifies the process of creating, updating, and sharing your resume."
+						content="Reactive Resume is a free and open-source resume builder that makes it easy to create, update, and share your resume."
 					>
 				</head>
 				<body><div id="app"></div></body>
@@ -87,6 +88,47 @@ describe("web app fallback classification", () => {
 
 		const dashboardResponse = await handleWebApp(new Request("https://example.com/dashboard"));
 		expect(await dashboardResponse.text()).not.toContain('rel="canonical"');
+	});
+
+	describe("the ATS checker page", () => {
+		const shell = `<html><head><title>Reactive Resume — A free and open-source resume builder</title><meta name="description" content="Marketing copy."></head><body></body></html>`;
+
+		it("serves an indexable shell rather than a 404", async () => {
+			vi.mocked(fs.readFile).mockResolvedValue(shell);
+
+			const response = await handleWebApp(new Request("https://example.com/ats-checker"));
+
+			expect(response.status).toBe(200);
+			expect(response.headers.get("Content-Type")).toBe("text/html; charset=UTF-8");
+			expect(response.headers.get("X-Robots-Tag")).toBeNull();
+		});
+
+		it("replaces the shell metadata with the checker's own", async () => {
+			vi.mocked(fs.readFile).mockResolvedValue(shell);
+
+			const html = await (await handleWebApp(new Request("https://example.com/ats-checker"))).text();
+
+			expect(html).toContain("<title>ATS Checker - Reactive Resume</title>");
+			expect(html).toContain('<link rel="canonical" href="https://rxresu.me/ats-checker">');
+			expect(html).toContain('<meta property="og:url" content="https://rxresu.me/ats-checker">');
+			expect(html).toContain('<meta property="og:image" content="https://rxresu.me/opengraph/ats-checker.png">');
+			expect(html).toContain('id="ats-checker-structured-data"');
+			expect(html).not.toContain("Marketing copy.");
+		});
+
+		it("answers HEAD without a body", async () => {
+			const response = await handleWebApp(new Request("https://example.com/ats-checker", { method: "HEAD" }));
+
+			expect(response.status).toBe(200);
+			expect(await response.text()).toBe("");
+		});
+
+		it("does not treat the checker path as a public resume owner", async () => {
+			const response = await handleWebApp(new Request("https://example.com/ats-checker/anything"));
+
+			expect(response.status).toBe(404);
+			expect(mocks.getPublicResumeSocialMeta).not.toHaveBeenCalled();
+		});
 	});
 
 	describe("public resume social cards", () => {
@@ -110,9 +152,9 @@ describe("web app fallback classification", () => {
 			expect(html).toContain('<link rel="canonical" href="https://rxresu.me/jane/resume">');
 			expect(html).toContain('<meta property="og:type" content="profile">');
 			expect(html).toContain('<meta property="og:title" content="Jane Doe — Staff Engineer">');
-			expect(html).toContain('<meta property="og:image" content="https://rxresu.me/templates/jpg/azurill.jpg">');
+			expect(html).toContain('<meta property="og:image" content="https://rxresu.me/opengraph/banner.jpg">');
 			expect(html).toContain('<meta name="twitter:card" content="summary_large_image">');
-			expect(html).toContain('<meta name="twitter:image" content="https://rxresu.me/templates/jpg/azurill.jpg">');
+			expect(html).toContain('<meta name="twitter:image" content="https://rxresu.me/opengraph/banner.jpg">');
 		});
 
 		it("escapes user-authored values so resume content cannot break out of the attribute", async () => {
@@ -246,5 +288,30 @@ describe("web app fallback classification", () => {
 		expect(unknownResponse.headers.get("Content-Type")).toBe("text/plain; charset=UTF-8");
 		expect(unknownResponse.headers.get("X-Robots-Tag")).toBe("noindex, nofollow");
 		expect(await unknownResponse.text()).toBe("");
+	});
+});
+
+describe("configured root shell", () => {
+	it.each(["GET", "HEAD"])("serves no-store noindex headers for %s", async (method) => {
+		mocks.env.ROOT_RESUME_ID = "private-or-missing-id";
+		const response = await handleWebApp(new Request("https://attacker.example/", { method }));
+		expect(response.headers.get("X-Robots-Tag")).toBe("noindex, follow");
+		expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+	});
+	it("uses configured canonical root without leaking ID or marketing metadata", async () => {
+		mocks.env.ROOT_RESUME_ID = "private-or-missing-id";
+		vi.mocked(fs.readFile).mockResolvedValue(
+			'<html><head><title>Marketing title</title><meta name="description" content="Marketing copy."></head><body></body></html>',
+		);
+		const html = await (
+			await handleWebApp(
+				new Request("https://attacker.example/?id=other", {
+					headers: { host: "attacker.example", "x-forwarded-host": "evil.example" },
+				}),
+			)
+		).text();
+		expect(html).toContain('<link rel="canonical" href="https://rxresu.me/" data-root-resume-shell>');
+		expect(html).toContain('<meta name="robots" content="noindex, follow" data-root-resume-shell>');
+		expect(html).not.toMatch(/private-or-missing-id|attacker|evil|Marketing|application\/ld\+json|timelapse/);
 	});
 });

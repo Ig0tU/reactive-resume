@@ -1,5 +1,4 @@
 import type { AIProvider } from "@reactive-resume/ai/types";
-import type { ResumeAnalysis } from "@reactive-resume/schema/resume/analysis";
 import type { ResumeData } from "@reactive-resume/schema/resume/data";
 import type { ModelMessage, UIMessage } from "ai";
 import { inflateRawSync } from "node:zlib";
@@ -32,7 +31,6 @@ import { createOllama } from "ollama-ai-provider-v2";
 import { match } from "ts-pattern";
 import { z } from "zod";
 import {
-	analyzeResumeSystemPrompt as analyzeResumeSystemPromptTemplate,
 	chatSystemPromptTemplate,
 	docxParserSystemPrompt,
 	docxParserUserPrompt,
@@ -48,7 +46,6 @@ import {
 } from "@reactive-resume/ai/tools/patch-proposal";
 import { AI_PROVIDER_DEFAULT_BASE_URLS, AI_PROVIDER_DISPLAY_NAMES, aiProviderSchema } from "@reactive-resume/ai/types";
 import { applyResumePatches } from "@reactive-resume/resume/patch";
-import { resumeAnalysisSchema } from "@reactive-resume/schema/resume/analysis";
 import { supportsProviderNativeWebSearch } from "./capabilities";
 import { resolveAiBaseUrl } from "./url-policy";
 
@@ -93,8 +90,33 @@ type GetModelInput = {
 const MAX_AI_FILE_BYTES = 10 * 1024 * 1024; // 10MB
 const MAX_AI_FILE_BASE64_CHARS = Math.ceil((MAX_AI_FILE_BYTES * 4) / 3) + 4;
 const TEST_CONNECTION_MAX_OUTPUT_TOKENS = 128;
+
+// AbortSignal.timeout stores the delay as a 32-bit signed integer.
+const MAX_ABORT_SIGNAL_TIMEOUT_MS = 2_147_483_647;
+
+/**
+ * Parse `AI_TEST_TIMEOUT_MS` into a safe, finite, non-negative integer.
+ *
+ * Rejects empty, non-numeric, negative, fractional, and out-of-range values
+ * so that `AbortSignal.timeout` never receives an invalid delay.
+ *
+ * @param raw - The raw environment variable value, if set.
+ * @param fallback - Milliseconds to use when `raw` is missing or invalid.
+ * @returns The validated timeout in milliseconds.
+ */
+function parseTestConnectionTimeoutMs(raw: string | undefined, fallback: number): number {
+	if (raw === undefined) return fallback;
+	const trimmed = raw.trim();
+	if (trimmed === "") return fallback;
+	if (!/^\d+$/.test(trimmed)) return fallback;
+	const value = Number(trimmed);
+	if (value < 0 || value > MAX_ABORT_SIGNAL_TIMEOUT_MS) return fallback;
+	return value;
+}
+
 // Long enough for a cold local model to load, short enough that the UI does not look frozen.
-const TEST_CONNECTION_TIMEOUT_MS = 30_000;
+// Self-hosted deployments with cold-start models (e.g. Ollama) can override via AI_TEST_TIMEOUT_MS.
+const TEST_CONNECTION_TIMEOUT_MS = parseTestConnectionTimeoutMs(process.env.AI_TEST_TIMEOUT_MS, 30_000);
 const DOCX_DOCUMENT_XML_PATH = "word/document.xml";
 const ZIP_LOCAL_FILE_HEADER_SIGNATURE = 0x04034b50;
 const ZIP_CENTRAL_DIRECTORY_SIGNATURE = 0x02014b50;
@@ -505,51 +527,7 @@ async function chat(input: ChatInput) {
 	return streamToEventIterator(result.toUIMessageStream());
 }
 
-type AnalyzeResumeInput = z.infer<typeof aiCredentialsSchema> & {
-	resumeData: ResumeData;
-};
-
-function buildAnalyzeResumeSystemPrompt(resumeData: ResumeData, now = new Date()): string {
-	const currentDate = now.toISOString().slice(0, 10);
-	return `${analyzeResumeSystemPromptTemplate}\n\n## Analysis Context\n\nCurrent date: ${currentDate} (UTC). Treat dates on or before this date as not future-dated. Flag a date as future-dated only when it is after the current date.\n\n## Resume Data\n\n${JSON.stringify(resumeData, null, 2)}`;
-}
-
-/** Sends resume data to the AI provider and returns a structured analysis, parsing raw JSON from the response text. */
-async function analyzeResume(input: AnalyzeResumeInput): Promise<ResumeAnalysis> {
-	const model = getModel(input);
-	const systemPrompt = buildAnalyzeResumeSystemPrompt(input.resumeData);
-
-	const result = await generateText({
-		model,
-		system: systemPrompt,
-		messages: [
-			{
-				role: "user",
-				content:
-					"Analyze this resume and return a structured report with scorecard, overall score, strengths, and actionable suggestions. Return ONLY raw JSON, no markdown fences or explanations.",
-			},
-		],
-	});
-
-	const text = result.text;
-	const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-	const candidate = fenceMatch?.[1] ?? text;
-
-	const firstBrace = candidate.indexOf("{");
-	const lastBrace = candidate.lastIndexOf("}");
-
-	if (firstBrace === -1 || lastBrace === -1 || lastBrace < firstBrace) {
-		throw new Error("AI returned no structured analysis output.");
-	}
-
-	const jsonString = candidate.substring(firstBrace, lastBrace + 1);
-	const parsed = JSON.parse(jsonString);
-
-	return resumeAnalysisSchema.parse(parsed);
-}
-
 export const aiService = {
-	analyzeResume,
 	chat,
 	parseDocx,
 	parsePdf,

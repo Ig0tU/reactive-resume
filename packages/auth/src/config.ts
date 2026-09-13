@@ -1,4 +1,4 @@
-import type { GenericOAuthConfig } from "better-auth/plugins";
+import type { GenericOAuthConfig, GenericOAuthUserInfo } from "better-auth/plugins";
 import type { JWTPayload } from "jose";
 import { apiKey } from "@better-auth/api-key";
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
@@ -8,7 +8,7 @@ import { passkey } from "@better-auth/passkey";
 import { compare, hash } from "bcrypt";
 import { APIError, betterAuth } from "better-auth";
 import { createAuthMiddleware } from "better-auth/api";
-import { verifyAccessToken } from "better-auth/oauth2";
+import { verifyBearerToken } from "better-auth/oauth2";
 import { admin, jwt } from "better-auth/plugins";
 import { genericOAuth } from "better-auth/plugins/generic-oauth";
 import { twoFactor } from "better-auth/plugins/two-factor";
@@ -46,6 +46,9 @@ function resolveInternalBaseUrl(): string {
 const internalBaseUrl = resolveInternalBaseUrl();
 
 const oauthAudienceBase = authBaseUrl.replace(/\/$/, "");
+// These identify the same account-wide API/MCP resource, not separate permission
+// tiers. Protected-resource metadata advertises the root; MCP clients may also
+// select the mounted endpoint or normalize either URI with a trailing slash.
 const OAUTH_AUDIENCES = [
 	oauthAudienceBase,
 	`${oauthAudienceBase}/`,
@@ -54,7 +57,7 @@ const OAUTH_AUDIENCES = [
 ];
 
 export function verifyOAuthToken(token: string): Promise<JWTPayload> {
-	return verifyAccessToken(token, {
+	return verifyBearerToken(token, {
 		jwksUrl: `${internalBaseUrl}/api/auth/jwks`,
 		verifyOptions: {
 			issuer: `${authBaseUrl}/api/auth`,
@@ -83,6 +86,34 @@ const oauthProviderRateLimit = isRateLimitEnabled
 			userinfo: false,
 		} as const);
 
+// Better Auth 1.7 types generic-OAuth profile extras as `unknown`.
+function asString(value: unknown): string | undefined {
+	return typeof value === "string" ? value : undefined;
+}
+
+// `@better-auth/oauth-provider@1.7.1` declares OpenAPI parameter metadata (`schema.items`) in a
+// shape that is not `exactOptionalPropertyTypes`-clean, which stops the plugin from structurally
+// satisfying `BetterAuthPlugin`. `metadata` only feeds doc generation, so dropping it from the
+// endpoint types keeps request/response inference (`auth.api.*`) intact. Remove once upstream ships
+// EOPT-compatible endpoint types.
+type WithoutEndpointMetadata<TPlugin> = TPlugin extends { endpoints: infer TEndpoints }
+	? Omit<TPlugin, "endpoints"> & {
+			endpoints: {
+				[K in keyof TEndpoints]: TEndpoints[K] extends {
+					(...args: infer TArgs): infer TResult;
+					options: infer TOptions;
+					path: infer TPath;
+				}
+					? {
+							(...args: TArgs): TResult;
+							options: Omit<TOptions, "metadata">;
+							path: TPath;
+						}
+					: TEndpoints[K];
+			};
+		}
+	: TPlugin;
+
 const getAuthConfig = () => {
 	const authConfigs: GenericOAuthConfig[] = [];
 
@@ -97,12 +128,15 @@ const getAuthConfig = () => {
 			tokenUrl: env.OAUTH_TOKEN_URL,
 			userInfoUrl: env.OAUTH_USER_INFO_URL,
 			scopes: env.OAUTH_SCOPES,
-			redirectURI: `${authBaseUrl}/api/auth/oauth2/callback/custom`,
-			mapProfileToUser: createProfileMapper({
+			// Better Auth 1.7 folds generic OAuth providers into `socialProviders`, so the callback
+			// is served by `/callback/:id` — the old `/oauth2/callback/:id` route no longer exists.
+			redirectURI: `${authBaseUrl}/api/auth/callback/custom`,
+			mapProfileToUser: createProfileMapper<GenericOAuthUserInfo>({
 				providerName: "OAuth Provider",
-				getPreferredUsername: (profile, context) => profile.preferred_username ?? context.emailLocalPart,
-				getName: (profile, context) => profile.name ?? profile.preferred_username ?? context.emailLocalPart,
-				getImage: (profile) => profile.image ?? profile.picture ?? profile.avatar_url,
+				getPreferredUsername: (profile, context) => asString(profile.preferred_username) ?? context.emailLocalPart,
+				getName: (profile, context) =>
+					asString(profile.name) ?? asString(profile.preferred_username) ?? context.emailLocalPart,
+				getImage: (profile) => asString(profile.image) ?? asString(profile.picture) ?? asString(profile.avatar_url),
 			}),
 		} satisfies GenericOAuthConfig);
 	}
@@ -145,6 +179,11 @@ const getAuthConfig = () => {
 				}
 			}),
 		},
+
+		// Without this, OAuth callback failures land on Better Auth's built-in `/api/auth/error`
+		// page. It also backs the `oauthProvider` plugin's authorization errors that happen before
+		// `redirect_uri` is validated and so cannot be returned to the requesting client.
+		onAPIError: { errorURL: "/auth/error" },
 
 		advanced: {
 			database: { generateId },
@@ -203,6 +242,12 @@ const getAuthConfig = () => {
 			},
 		},
 
+		// Better Auth gates `/unlink-account` (and `/list-sessions`) behind a "fresh"
+		// session, which defaults to one day old. Sessions here live for a week and
+		// there is no re-authentication flow to refresh that timestamp, so disconnecting
+		// a provider failed with `SESSION_NOT_FRESH` for anyone who signed in yesterday.
+		session: { freshAge: 0 },
+
 		account: {
 			accountLinking: {
 				enabled: true,
@@ -259,15 +304,16 @@ const getAuthConfig = () => {
 			}),
 			oauthProvider({
 				loginPage: "/api/auth/oauth",
-				consentPage: "/api/auth/oauth",
-				validAudiences: OAUTH_AUDIENCES,
+				consentPage: "/auth/consent",
+				resources: OAUTH_AUDIENCES,
+				clientRegistrationDefaultResources: OAUTH_AUDIENCES,
 				allowDynamicClientRegistration: true,
-				// Required for MCP client onboarding (RFC 7591). Phishing vector is closed by the
-				// redirect_uri policy in the hooks.before middleware above and server auth preflight.
+				// Required for MCP client onboarding (RFC 7591). Redirect URI validation
+				// and explicit user consent protect access by dynamically registered clients.
 				allowUnauthenticatedClientRegistration: true,
 				rateLimit: oauthProviderRateLimit,
 				silenceWarnings: { oauthAuthServerConfig: true },
-			}),
+			}) as WithoutEndpointMetadata<ReturnType<typeof oauthProvider>>,
 			username({
 				minUsernameLength: 3,
 				maxUsernameLength: 64,

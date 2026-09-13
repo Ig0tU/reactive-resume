@@ -20,6 +20,13 @@ function resolveWebDistPath() {
 const staticRoot = resolveWebDistPath();
 const indexHtmlPath = `${staticRoot}/index.html`;
 const noindexShellPrefixes = ["/auth", "/dashboard", "/builder", "/agent", "/templates"];
+/**
+ * Marketing pages the SPA owns that search engines should index.
+ *
+ * Without an entry here the fallback below returns 404 for the path in production — the dev Vite
+ * server serves the shell for anything, so this failure only ever shows up once deployed.
+ */
+const indexableAppPaths = new Set(["/ats-checker"]);
 const reservedPublicResumeSegments = new Set([
 	"api",
 	"mcp",
@@ -30,6 +37,7 @@ const reservedPublicResumeSegments = new Set([
 	"builder",
 	"agent",
 	"templates",
+	"ats-checker",
 ]);
 
 function isAssetPath(pathname: string): boolean {
@@ -62,38 +70,36 @@ const BASE_SECURITY_HEADERS = {
 const ROOT_TITLE = "Reactive Resume — A free and open-source resume builder";
 // Keep under ~120 characters so Google's mobile SERP snippet is not truncated at 3 lines.
 const ROOT_DESCRIPTION =
-	"Free, open-source resume builder. Create, update, and share a professional resume in minutes — no ads, no paywall.";
+	"Free, open-source resume builder. Create, update, and share your resume, with no ads and no paywall.";
 const ROOT_POSTER_PATH = "/videos/timelapse-v1.webp";
 const ROOT_FAQ_ITEMS = [
 	{
 		question: "Is Reactive Resume really free?",
 		answer:
-			"Yes! Reactive Resume is completely free to use, with no hidden costs, premium tiers, or subscription fees. It's open-source and will always remain free.",
+			"Yes. Reactive Resume is free to use, with no hidden costs, premium tiers, or subscription fees. It's open source, and it will stay free.",
 	},
 	{
 		question: "How is my data protected?",
 		answer:
-			"Your data is stored securely and is never shared with third parties. You can also self-host Reactive Resume on your own servers for complete control over your data.",
+			"Your data is stored securely and never shared with third parties. If you want full control over it, you can self-host Reactive Resume on your own servers.",
 	},
 	{
 		question: "Can I export my resume to PDF?",
-		answer:
-			"Absolutely! You can export your resume to PDF with a single click. The exported PDF maintains all your formatting and styling perfectly.",
+		answer: "Yes. One click exports your resume to PDF, with your formatting and styling intact.",
 	},
 	{
 		question: "Is Reactive Resume available in multiple languages?",
 		answer:
-			"Yes, Reactive Resume is available in multiple languages. You can choose your preferred language in the settings page, or using the language switcher in the top right corner. If you don't see your language, or you would like to improve the existing translations, you can contribute to the translations on Crowdin.",
+			"Yes. Pick your language on the settings page, or with the language switcher in the top right corner. If your language is missing, or the existing translation could be better, you can contribute to the translations on Crowdin.",
 	},
 	{
 		question: "What makes Reactive Resume different from other resume builders?",
 		answer:
-			"Reactive Resume is open-source, privacy-focused, and completely free. Unlike other resume builders, it doesn't show ads, track your data, or limit your features behind a paywall.",
+			"Reactive Resume is open source, private, and free. It shows no ads, doesn't track what you do, and doesn't lock features behind a paywall.",
 	},
 	{
 		question: "How do I share my resume?",
-		answer:
-			"You can share your resume via a unique public URL, protect it with a password, or download it as a PDF to share directly. The choice is yours!",
+		answer: "Share it with a public URL, put a password on that URL, or download the PDF and send it yourself.",
 	},
 ] as const;
 
@@ -121,13 +127,13 @@ function createRootSeoMarkup(canonicalUrl: string) {
 					price: "0",
 					priceCurrency: "USD",
 				},
-				codeRepository: "https://github.com/amruthpillai/reactive-resume",
+				codeRepository: "https://github.com/reactive-resume/reactive-resume",
 			},
 			{
 				"@type": "Project",
 				name: "Reactive Resume",
 				url: canonicalUrl,
-				sameAs: ["https://github.com/amruthpillai/reactive-resume"],
+				sameAs: ["https://github.com/reactive-resume/reactive-resume"],
 			},
 			{
 				"@type": "FAQPage",
@@ -160,6 +166,43 @@ function createRootSeoMarkup(canonicalUrl: string) {
 	`;
 }
 
+const ATS_CHECKER_TITLE = "ATS Checker - Reactive Resume";
+// Keep under ~120 characters so Google's mobile SERP snippet is not truncated at 3 lines.
+const ATS_CHECKER_DESCRIPTION =
+	"Check whether software can read your resume PDF. Runs entirely in your browser, so your file is never uploaded.";
+
+function createAtsCheckerSeoMarkup(origin: string) {
+	const canonicalUrl = `${origin}/ats-checker`;
+	const imageUrl = `${origin}/opengraph/ats-checker.png`;
+	const structuredData = {
+		"@context": "https://schema.org",
+		"@type": "WebApplication",
+		name: "ATS Checker",
+		url: canonicalUrl,
+		description: ATS_CHECKER_DESCRIPTION,
+		applicationCategory: "BusinessApplication",
+		operatingSystem: "Web",
+		isAccessibleForFree: true,
+		offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+		isPartOf: { "@type": "WebSite", name: "Reactive Resume", url: `${origin}/` },
+	};
+
+	return `
+		<link rel="canonical" href="${canonicalUrl}">
+		<meta property="og:type" content="website">
+		<meta property="og:site_name" content="Reactive Resume">
+		<meta property="og:title" content="${ATS_CHECKER_TITLE}">
+		<meta property="og:description" content="${ATS_CHECKER_DESCRIPTION}">
+		<meta property="og:url" content="${canonicalUrl}">
+		<meta property="og:image" content="${imageUrl}">
+		<meta name="twitter:card" content="summary_large_image">
+		<meta name="twitter:title" content="${ATS_CHECKER_TITLE}">
+		<meta name="twitter:description" content="${ATS_CHECKER_DESCRIPTION}">
+		<meta name="twitter:image" content="${imageUrl}">
+		<script id="ats-checker-structured-data" type="application/ld+json">${JSON.stringify(structuredData)}</script>
+	`;
+}
+
 // Resume names, headlines, and summaries are user-authored, so they must never reach the served
 // HTML unescaped.
 const escapeAttribute = (value: string) =>
@@ -181,7 +224,7 @@ async function createPublicResumeSeoMarkup(pathname: string, origin: string) {
 	if (!meta) return null;
 
 	const canonicalUrl = `${origin}/${username}/${slug}`;
-	const imageUrl = `${origin}/templates/jpg/${meta.template}.jpg`;
+	const imageUrl = `${origin}/opengraph/banner.jpg`;
 	const pageTitle = escapeAttribute(`${meta.name} - Reactive Resume`);
 	const title = escapeAttribute(meta.title);
 	const description = escapeAttribute(meta.description);
@@ -215,7 +258,17 @@ export const serveWebDistStatic = serveStatic({
 });
 
 function getFallbackResponseHeaders(pathname: string) {
-	if (pathname === "/") return { "Content-Type": "text/html; charset=UTF-8", ...BASE_SECURITY_HEADERS };
+	if (pathname === "/" && env.ROOT_RESUME_ID?.trim()) {
+		return {
+			"Content-Type": "text/html; charset=UTF-8",
+			"X-Robots-Tag": "noindex, follow",
+			"Cache-Control": "private, no-store",
+			...BASE_SECURITY_HEADERS,
+		};
+	}
+	if (pathname === "/" || indexableAppPaths.has(pathname)) {
+		return { "Content-Type": "text/html; charset=UTF-8", ...BASE_SECURITY_HEADERS };
+	}
 	if (isNoindexShellPath(pathname) || isPublicResumePath(pathname)) {
 		return {
 			"Content-Type": "text/html; charset=UTF-8",
@@ -254,8 +307,27 @@ export async function handleWebApp(request: Request) {
 	const html = await fs.readFile(indexHtmlPath, "utf-8");
 	const canonicalUrl = new URL("/", env.APP_URL).toString();
 
+	if (pathname === "/" && env.ROOT_RESUME_ID?.trim()) {
+		// Root configuration never discloses a target in the HTML shell. The public API
+		// gates data and browser metadata; shell requests must not count extra views.
+		const shell = html
+			.replace(/<title>[^<]*<\/title>/, "<title>Reactive Resume</title>")
+			.replace(/<meta\s+name="description"[^>]*>/, '<meta name="description" content="">');
+		const markup = `<link rel="canonical" href="${escapeAttribute(canonicalUrl)}" data-root-resume-shell><meta name="robots" content="noindex, follow" data-root-resume-shell>`;
+		return new Response(shell.replace("</head>", `${markup}</head>`), { headers });
+	}
+
 	if (pathname === "/") {
 		return new Response(html.replace("</head>", `${createRootSeoMarkup(canonicalUrl)}</head>`), { headers });
+	}
+
+	if (pathname === "/ats-checker") {
+		const origin = new URL(env.APP_URL).origin;
+		const withTitle = html
+			.replace(/<title>[^<]*<\/title>/, `<title>${ATS_CHECKER_TITLE}</title>`)
+			.replace(/<meta\s+name="description"[^>]*>/, `<meta name="description" content="${ATS_CHECKER_DESCRIPTION}">`);
+
+		return new Response(withTitle.replace("</head>", `${createAtsCheckerSeoMarkup(origin)}</head>`), { headers });
 	}
 
 	if (isPublicResumePath(pathname)) {
